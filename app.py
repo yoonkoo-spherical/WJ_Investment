@@ -231,7 +231,7 @@ with tab1:
                 """
                 try:
                     res = client.models.generate_content(
-                        model='gemini-2.5-flash', contents=prompt, config={"response_mime_type": "application/json"}
+                        model='gemini-3.5-flash', contents=prompt, config={"response_mime_type": "application/json"}
                     )
                     result = json.loads(res.text.strip())
 
