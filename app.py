@@ -83,17 +83,15 @@ def parse_account_data(content):
     return pd.DataFrame(data)
 
 def integrate_assets(df):
-    """278530 종목을 294400 종목으로 합산 통합 팩토링합니다."""
-    if df.empty:
-        return df
+    if df is None or df.empty:
+        return pd.DataFrame()
     
-    # 복사본 생성으로 SettingWithCopyWarning 방지
     df_copied = df.copy()
     
-    # 278530 종목코드 발견 시 294400 속성으로 통일
-    is_target_ticker = df_copied['종목코드'] == '278530'
-    df_copied.loc[is_target_ticker, '종목명'] = 'KIWOOM 200TR'
-    df_copied.loc[is_target_ticker, '종목코드'] = '294400'
+    if '종목코드' in df_copied.columns:
+        is_target_ticker = df_copied['종목코드'] == '278530'
+        df_copied.loc[is_target_ticker, '종목명'] = 'KIWOOM 200TR'
+        df_copied.loc[is_target_ticker, '종목코드'] = '294400'
     
     def extract_numeric_shares(val):
         try:
@@ -101,42 +99,48 @@ def integrate_assets(df):
         except:
             return 0
             
-    df_copied['보유주수_숫자'] = df_copied['보유주수'].apply(extract_numeric_shares)
-    
-    # 그룹화 연산 수행하여 비중 및 주수 합산
-    agg_dict = {'비중(%)': 'sum', '보유주수_숫자': 'sum'}
-    if '날짜' in df_copied.columns:
-        group_keys = ['날짜', '분류', '종목코드', '종목명']
+    if '보유주수' in df_copied.columns:
+        df_copied['보유주수_숫자'] = df_copied['보유주수'].apply(extract_numeric_shares)
     else:
-        group_keys = ['분류', '종목코드', '종목명']
+        df_copied['보유주수_숫자'] = 0
         
-    grouped = df_copied.groupby(group_keys, as_index=False).agg(agg_dict)
+    group_keys = ['분류', '종목코드', '종목명']
+    for col in ['날짜', '_sort_key']:
+        if col in df_copied.columns:
+            group_keys.append(col)
+            
+    if '비중(%)' in df_copied.columns:
+        df_copied['비중(%)'] = pd.to_numeric(df_copied['비중(%)'], errors='coerce').fillna(0)
+        
+    grouped = df_copied.groupby(group_keys, as_index=False).agg({'비중(%)': 'sum', '보유주수_숫자': 'sum'})
     
     grouped['보유주수'] = grouped['보유주수_숫자'].astype(str) + "주"
     grouped['비중(%)'] = grouped['비중(%)'].round(2)
-    grouped['범례라벨'] = grouped.apply(lambda r: f"{r['종목명']} ({r['보유주수']}, {r['비중(%)']}%)", axis=1)
+    grouped['범례라벨'] = grouped.apply(lambda r: f"{r.get('종목명', '')} ({r.get('보유주수', '')}, {r.get('비중(%)', 0)}%)", axis=1)
     
     return grouped.drop(columns=['보유주수_숫자'])
 
 def parse_target_data(content):
-    if not content:
-        return pd.DataFrame()
-    cleaned_content = re.sub(r'\\s*', '', content)
-    lines = cleaned_content.strip().split('\n')
     data = []
-    for line in lines:
-        ratio_match = re.search(r'([\d.]+)\s*%$', line)
-        if ratio_match:
-            ratio = float(ratio_match.group(1))
-            front = line[:ratio_match.start()].strip()
-            front_parts = front.split()
-            if len(front_parts) >= 2:
-                if front_parts[1].isdigit() and len(front_parts[1]) == 6:
-                    name = " ".join(front_parts[2:])
-                else:
-                    name = " ".join(front_parts[1:])
-                data.append({"종목명": name, "목표비중(%)": ratio})
-    return pd.DataFrame(data)
+    if content:
+        cleaned_content = re.sub(r'\\s*', '', content)
+        lines = cleaned_content.strip().split('\n')
+        for line in lines:
+            ratio_match = re.search(r'([\d.]+)\s*%$', line)
+            if ratio_match:
+                ratio = float(ratio_match.group(1))
+                front = line[:ratio_match.start()].strip()
+                front_parts = front.split()
+                if len(front_parts) >= 2:
+                    if front_parts[1].isdigit() and len(front_parts[1]) == 6:
+                        name = " ".join(front_parts[2:])
+                    else:
+                        name = " ".join(front_parts[1:])
+                    data.append({"종목명": name, "목표비중(%)": ratio})
+    df = pd.DataFrame(data)
+    if df.empty:
+        return pd.DataFrame(columns=["종목명", "목표비중(%)"])
+    return df
 
 def get_all_historical_data(repo, account_choice, target_df):
     try:
@@ -144,34 +148,52 @@ def get_all_historical_data(repo, account_choice, target_df):
         target_files = [f for f in files if f.name.startswith(account_choice) and f.name.endswith(".txt")]
         history_data = []
         for file in target_files:
-            content = file.decoded_content.decode("utf-8")
-            df = parse_account_data(content)
-            if df.empty: continue
-            
-            match = re.search(r'_(\d{6})(?:_(\d{6}))?\.txt', file.name)
-            if match:
-                d_str = match.group(1)
-                t_str = match.group(2) if match.group(2) else "000000"
-                date_obj = datetime.strptime(d_str + t_str, "%y%m%d%H%M%S")
-            else:
-                date_obj = datetime(2026, 2, 12, 0, 0)
+            try:
+                content = file.decoded_content.decode("utf-8")
+                df = parse_account_data(content)
+                if df.empty: continue
                 
-            df['날짜'] = date_obj.strftime("%y-%m-%d %H:%M")
-            df['_sort_key'] = date_obj
-            
-            # 과거 이력 적재 시점에도 종목 통합 수행
-            df_integrated = integrate_assets(df)
-            history_data.append(df_integrated)
+                match = re.search(r'_(\d{6})(?:_(\d{6}))?\.txt', file.name)
+                if match:
+                    d_str = match.group(1)
+                    t_str = match.group(2) if match.group(2) else "000000"
+                    date_obj = datetime.strptime(d_str + t_str, "%y%m%d%H%M%S")
+                else:
+                    date_obj = datetime(2026, 2, 12, 0, 0)
+                    
+                df['날짜'] = date_obj.strftime("%y-%m-%d %H:%M")
+                # DataFrame 그룹핑 에러를 방지하기 위해 datetime 객체 대신 timestamp(숫자) 활용
+                df['_sort_key'] = date_obj.timestamp()
+                
+                df_integrated = integrate_assets(df)
+                if not df_integrated.empty:
+                    history_data.append(df_integrated)
+            except Exception as inner_e:
+                st.warning(f"데이터 파일 분석 중 예외 발생 ({file.name}): {inner_e}")
+                continue
         
-        if not history_data: return pd.DataFrame()
+        if not history_data: 
+            return pd.DataFrame()
+            
         combined_df = pd.concat(history_data, ignore_index=True)
-        combined_df = pd.merge(combined_df, target_df, on="종목명", how="left")
-        combined_df["목표비중(%)"] = combined_df["목표비중(%)"].fillna(0)
+        
+        if not target_df.empty and "종목명" in target_df.columns:
+            combined_df = pd.merge(combined_df, target_df, on="종목명", how="left")
+        else:
+            combined_df["목표비중(%)"] = 0.0
+            
+        combined_df["비중(%)"] = pd.to_numeric(combined_df.get("비중(%)", 0), errors='coerce').fillna(0)
+        combined_df["목표비중(%)"] = pd.to_numeric(combined_df.get("목표비중(%)", 0), errors='coerce').fillna(0)
         combined_df["목표대비편차(%p)"] = combined_df["비중(%)"] - combined_df["목표비중(%)"]
         
-        combined_df = combined_df.sort_values('_sort_key').drop(columns=['_sort_key'])
+        if '_sort_key' in combined_df.columns:
+            combined_df = combined_df.sort_values('_sort_key').drop(columns=['_sort_key'])
+        elif '날짜' in combined_df.columns:
+            combined_df = combined_df.sort_values('날짜')
+            
         return combined_df
-    except:
+    except Exception as e:
+        st.error(f"시계열 데이터 구성 중 오류 발생: {e}")
         return pd.DataFrame()
 
 def df_to_markdown_table(df):
@@ -329,13 +351,11 @@ with tab2:
     p_file, p_cont = get_latest_file_content(repo, "연금저축")
     if p_cont:
         st.subheader(f"최신 자산 비중 ({p_file})")
-        # 자산 통합 로직 적용
         pension_data = integrate_assets(parse_account_data(p_cont))
         
         col1, col2 = st.columns(2)
         with col1:
-            fig_p = px.pie(pension_data, values='비중(%)', names='범례라벨', title="포트폴리오 비중 (294400/278530 통합 완료)")
-            # 모바일 가독성: 범례 하단 가로 배치 및 마진 축소
+            fig_p = px.pie(pension_data, values='비중(%)', names='범례라벨', title="포트폴리오 비중 (294400 통합 완료)")
             fig_p.update_layout(
                 legend=dict(orientation="h", y=-0.1, x=0, yanchor="top"),
                 margin=dict(l=10, r=10, t=40, b=10)
@@ -344,9 +364,8 @@ with tab2:
             st.plotly_chart(fig_p, use_container_width=True)
         with col2:
             p_hist = get_all_historical_data(repo, "연금저축", target_df)
-            if not p_hist.empty and len(p_hist['날짜'].unique()) > 0:
+            if not p_hist.empty:
                 fig_pl = px.line(p_hist, x='날짜', y='목표대비편차(%p)', color='종목명', markers=True, title="목표 비중 편차 (0%p 일치)")
-                # 모바일 가독성: 범례 하단 배치 및 마진 축소, 카테고리 축 강제
                 fig_pl.update_layout(
                     legend=dict(orientation="h", y=-0.3, x=0, yanchor="top"),
                     margin=dict(l=10, r=10, t=40, b=10)
@@ -363,13 +382,11 @@ with tab3:
     g_file, g_cont = get_latest_file_content(repo, "종합계좌")
     if g_cont:
         st.subheader(f"최신 자산 비중 ({g_file})")
-        # 자산 통합 로직 적용
         general_data = integrate_assets(parse_account_data(g_cont))
         
         col3, col4 = st.columns(2)
         with col3:
-            fig_g = px.pie(general_data, values='비중(%)', names='범례라벨', title="포트폴리오 비중 (294400/278530 통합 완료)")
-            # 모바일 가독성: 범례 하단 가로 배치 및 마진 축소
+            fig_g = px.pie(general_data, values='비중(%)', names='범례라벨', title="포트폴리오 비중 (294400 통합 완료)")
             fig_g.update_layout(
                 legend=dict(orientation="h", y=-0.1, x=0, yanchor="top"),
                 margin=dict(l=10, r=10, t=40, b=10)
@@ -378,9 +395,8 @@ with tab3:
             st.plotly_chart(fig_g, use_container_width=True)
         with col4:
             g_hist = get_all_historical_data(repo, "종합계좌", target_df)
-            if not g_hist.empty and len(g_hist['날짜'].unique()) > 0:
+            if not g_hist.empty:
                 fig_gl = px.line(g_hist, x='날짜', y='목표대비편차(%p)', color='종목명', markers=True, title="목표 비중 편차 (0%p 일치)")
-                # 모바일 가독성: 범례 하단 배치 및 마진 축소, 카테고리 축 강제
                 fig_gl.update_layout(
                     legend=dict(orientation="h", y=-0.3, x=0, yanchor="top"),
                     margin=dict(l=10, r=10, t=40, b=10)
