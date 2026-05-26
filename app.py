@@ -18,7 +18,6 @@ def get_github_repo():
     return repo
 
 def get_latest_file_content(repo, account_choice):
-    """특정 계좌의 가장 최신 파일명과 내용을 반환합니다."""
     try:
         files = repo.get_contents("")
         target_files = [f for f in files if f.name.startswith(account_choice) and f.name.endswith(".txt")]
@@ -112,7 +111,8 @@ def get_all_historical_data(repo, account_choice, target_df):
             content = file.decoded_content.decode("utf-8")
             df = parse_account_data(content)
             if df.empty: continue
-            match = re.search(r'_(\d{6})\.txt', file.name)
+            # 정규식 수정: YYMMDD_HHMMSS 형태에서 앞의 6자리 날짜만 추출
+            match = re.search(r'_(\d{6})(?:_\d{6})?\.txt', file.name)
             date_obj = datetime.strptime(match.group(1), "%y%m%d").date() if match else datetime(2026, 2, 12).date()
             df['날짜'] = date_obj
             history_data.append(df)
@@ -136,7 +136,6 @@ def df_to_markdown_table(df):
     return "\n".join([header, separator] + rows)
 
 def append_rebalancing_history(repo, account, deposit, spent, rec_df, explanation):
-    """실행 결과를 엄격한 포맷의 마크다운 문자열로 구성하여 파일에 누적 저장합니다."""
     filename = "Rebalancing_History.md"
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     remain = deposit - spent
@@ -157,11 +156,9 @@ def append_rebalancing_history(repo, account, deposit, spent, rec_df, explanatio
     try:
         file = repo.get_contents(filename)
         existing_content = file.decoded_content.decode("utf-8")
-        # 최신 이력이 위로 오도록 앞에 추가
         updated_content = new_record.strip() + "\n\n" + existing_content
         update_github_file(repo, filename, updated_content, f"Append history: {current_time}", file.sha)
     except:
-        # 파일이 존재하지 않는 경우 신규 생성
         save_to_github(repo, filename, new_record.strip(), f"Create history file: {current_time}")
 
 # ==========================================
@@ -182,7 +179,6 @@ deposit_amount_manwon = st.sidebar.number_input("추가 입금 금액 (만원 �
 deposit_amount = deposit_amount_manwon * 10000
 run_button = st.sidebar.button("AI 리밸런싱 연산 시작")
 
-# 4개의 탭 구성
 tab1, tab2, tab3, tab4 = st.tabs(["🎯 AI 리밸런싱 결과", "📈 연금저축 현황", "📉 종합계좌 현황", "📝 리밸런싱 이력"])
 
 # ------------------------------------------
@@ -235,7 +231,7 @@ with tab1:
                 """
                 try:
                     res = client.models.generate_content(
-                        model='gemini-3.5-flash', contents=prompt, config={"response_mime_type": "application/json"}
+                        model='gemini-2.5-flash', contents=prompt, config={"response_mime_type": "application/json"}
                     )
                     result = json.loads(res.text.strip())
 
@@ -249,21 +245,18 @@ with tab1:
                         total_spent = rec_df['total_cost'].sum()
                         st.info(f"지출 예산: {total_spent:,}원 | 잔여 현금: {deposit_amount - total_spent:,}원")
 
-                    # 1. 텍스트 파일 저장
+                    # 1. 텍스트 파일 저장 (시간 포함하여 중복 방지)
                     updated_lines = result.get("updated_account_lines", [])
                     if updated_lines:
-                        date_str = datetime.now().strftime("%y%m%d")
+                        # 날짜 뒤에 시분초를 붙여서 항상 새로운 파일명 생성
+                        date_str = datetime.now().strftime("%y%m%d_%H%M%S")
                         new_file_name = f"{account_choice}_{date_str}.txt"
-                        existing_files = [f.name for f in repo.get_contents("")]
-                        if new_file_name not in existing_files:
-                            save_to_github(repo, new_file_name, "\n".join(updated_lines), f"Add {new_file_name}")
-                            st.success(f"✅ `{new_file_name}` 저장소 백업 완료.")
-                        else:
-                            st.warning(f"⚠️ `{new_file_name}` 기존재로 텍스트 파일 덮어쓰기 생략.")
+                        save_to_github(repo, new_file_name, "\n".join(updated_lines), f"Add {new_file_name}")
+                        st.success(f"✅ `{new_file_name}` 저장소 백업 완료. (시계열에 별도 데이터로 누적됩니다)")
 
                     # 2. 마크다운 이력 누적 저장
                     append_rebalancing_history(repo, account_choice, deposit_amount, total_spent, rec_df, result.get("explanation", ""))
-                    st.success("✅ `Rebalancing_History.md` 파일에 실행 이력이 누적 저장되었습니다.")
+                    st.success("✅ `Rebalancing_History.md` 파일에 실행 이력이 성공적으로 누적되었습니다.")
                 except Exception as e:
                     st.error(f"오류 발생: {e}")
         else:
@@ -321,17 +314,17 @@ with tab4:
     history_content = get_file_content(repo, "Rebalancing_History.md")
     
     if history_content:
-        # 엄격한 포맷인 주석 블록을 기준으로 이력 분리 파싱
-        records = re.findall(r'(.*?)', history_content, re.DOTALL)
+        # 안전한 파싱: split을 사용하여 주석 블록 단위로 텍스트를 나눔
+        parts = history_content.split("")
+        records = [p.split("")[0].strip() for p in parts if "" in p]
+        
         if records:
             for idx, record in enumerate(records):
-                # 제목 추출을 위해 정규식 활용
                 title_match = re.search(r'###\s*(.*?)\n', record)
                 expander_title = title_match.group(1).strip() if title_match else f"이력 {len(records) - idx}"
                 
-                # 최신 이력(첫 번째)만 기본적으로 열어둠
                 with st.expander(expander_title, expanded=(idx == 0)):
-                    st.markdown(record.strip())
+                    st.markdown(record)
         else:
             st.info("이력 형식을 파싱할 수 없습니다.")
     else:
