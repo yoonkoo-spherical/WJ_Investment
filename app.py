@@ -111,7 +111,6 @@ def get_all_historical_data(repo, account_choice, target_df):
             content = file.decoded_content.decode("utf-8")
             df = parse_account_data(content)
             if df.empty: continue
-            # 정규식 수정: YYMMDD_HHMMSS 형태에서 앞의 6자리 날짜만 추출
             match = re.search(r'_(\d{6})(?:_\d{6})?\.txt', file.name)
             date_obj = datetime.strptime(match.group(1), "%y%m%d").date() if match else datetime(2026, 2, 12).date()
             df['날짜'] = date_obj
@@ -141,7 +140,9 @@ def append_rebalancing_history(repo, account, deposit, spent, rec_df, explanatio
     remain = deposit - spent
     md_table = df_to_markdown_table(rec_df)
 
+    # HTML 태그 대신 마크다운 렌더링에 영향받지 않는 특수 기호 사용
     new_record = f"""
+@@@ RECORD_START @@@
 ### 🕒 {current_time} | 계좌: {account}
 - **추가 입금액**: {deposit:,}원
 - **지출 예산**: {spent:,}원
@@ -152,6 +153,7 @@ def append_rebalancing_history(repo, account, deposit, spent, rec_df, explanatio
 
 #### 💡 AI 분석 결과
 {explanation}
+@@@ RECORD_END @@@
 """
     try:
         file = repo.get_contents(filename)
@@ -245,16 +247,13 @@ with tab1:
                         total_spent = rec_df['total_cost'].sum()
                         st.info(f"지출 예산: {total_spent:,}원 | 잔여 현금: {deposit_amount - total_spent:,}원")
 
-                    # 1. 텍스트 파일 저장 (시간 포함하여 중복 방지)
                     updated_lines = result.get("updated_account_lines", [])
                     if updated_lines:
-                        # 날짜 뒤에 시분초를 붙여서 항상 새로운 파일명 생성
                         date_str = datetime.now().strftime("%y%m%d_%H%M%S")
                         new_file_name = f"{account_choice}_{date_str}.txt"
                         save_to_github(repo, new_file_name, "\n".join(updated_lines), f"Add {new_file_name}")
                         st.success(f"✅ `{new_file_name}` 저장소 백업 완료. (시계열에 별도 데이터로 누적됩니다)")
 
-                    # 2. 마크다운 이력 누적 저장
                     append_rebalancing_history(repo, account_choice, deposit_amount, total_spent, rec_df, result.get("explanation", ""))
                     st.success("✅ `Rebalancing_History.md` 파일에 실행 이력이 성공적으로 누적되었습니다.")
                 except Exception as e:
@@ -314,9 +313,9 @@ with tab4:
     history_content = get_file_content(repo, "Rebalancing_History.md")
     
     if history_content:
-        # 안전한 파싱: split을 사용하여 주석 블록 단위로 텍스트를 나눔
-        parts = history_content.split("")
-        records = [p.split("")[0].strip() for p in parts if "" in p]
+        # 수정된 일반 텍스트 기호 기준으로 파싱
+        parts = history_content.split("@@@ RECORD_START @@@")
+        records = [p.split("@@@ RECORD_END @@@")[0].strip() for p in parts if "@@@ RECORD_END @@@" in p]
         
         if records:
             for idx, record in enumerate(records):
@@ -326,6 +325,6 @@ with tab4:
                 with st.expander(expander_title, expanded=(idx == 0)):
                     st.markdown(record)
         else:
-            st.info("이력 형식을 파싱할 수 없습니다.")
+            st.info("이력 형식을 파싱할 수 없거나 기록이 비어 있습니다.")
     else:
         st.info("아직 저장된 리밸런싱 이력이 없습니다.")
