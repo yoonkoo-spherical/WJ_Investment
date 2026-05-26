@@ -140,7 +140,6 @@ def append_rebalancing_history(repo, account, deposit, spent, rec_df, explanatio
     remain = deposit - spent
     md_table = df_to_markdown_table(rec_df)
 
-    # HTML 태그 대신 마크다운 렌더링에 영향받지 않는 특수 기호 사용
     new_record = f"""
 @@@ RECORD_START @@@
 ### 🕒 {current_time} | 계좌: {account}
@@ -232,8 +231,14 @@ with tab1:
                 }}
                 """
                 try:
+                    # AI 출력의 무작위성을 통제하기 위해 temperature를 0.0으로 설정
                     res = client.models.generate_content(
-                        model='gemini-3.5-flash', contents=prompt, config={"response_mime_type": "application/json"}
+                        model='gemini-3.5-flash', 
+                        contents=prompt, 
+                        config={
+                            "response_mime_type": "application/json",
+                            "temperature": 0.0
+                        }
                     )
                     result = json.loads(res.text.strip())
 
@@ -313,7 +318,6 @@ with tab4:
     history_content = get_file_content(repo, "Rebalancing_History.md")
     
     if history_content:
-        # 수정된 일반 텍스트 기호 기준으로 파싱
         parts = history_content.split("@@@ RECORD_START @@@")
         records = [p.split("@@@ RECORD_END @@@")[0].strip() for p in parts if "@@@ RECORD_END @@@" in p]
         
