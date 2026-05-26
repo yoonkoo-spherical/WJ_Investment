@@ -111,9 +111,19 @@ def get_all_historical_data(repo, account_choice, target_df):
             content = file.decoded_content.decode("utf-8")
             df = parse_account_data(content)
             if df.empty: continue
-            match = re.search(r'_(\d{6})(?:_\d{6})?\.txt', file.name)
-            date_obj = datetime.strptime(match.group(1), "%y%m%d").date() if match else datetime(2026, 2, 12).date()
-            df['날짜'] = date_obj
+            
+            # 기존 YYMMDD 포맷과 신규 YYMMDD_HHMMSS 포맷 모두에서 날짜 및 시간 추출
+            match = re.search(r'_(\d{6})(?:_(\d{6}))?\.txt', file.name)
+            if match:
+                d_str = match.group(1)
+                t_str = match.group(2) if match.group(2) else "000000"
+                date_obj = datetime.strptime(d_str + t_str, "%y%m%d%H%M%S")
+            else:
+                date_obj = datetime(2026, 2, 12, 0, 0)
+                
+            # 시각화를 위해 포맷팅된 문자열 컬럼 생성 (예: 26-05-26 15:30)
+            df['날짜'] = date_obj.strftime("%y-%m-%d %H:%M")
+            df['_sort_key'] = date_obj # 정렬을 위한 실제 datetime 객체 보관
             history_data.append(df)
         
         if not history_data: return pd.DataFrame()
@@ -121,6 +131,9 @@ def get_all_historical_data(repo, account_choice, target_df):
         combined_df = pd.merge(combined_df, target_df, on="종목명", how="left")
         combined_df["목표비중(%)"] = combined_df["목표비중(%)"].fillna(0)
         combined_df["목표대비편차(%p)"] = combined_df["비중(%)"] - combined_df["목표비중(%)"]
+        
+        # 실제 시간 객체 기준으로 정렬한 뒤, 불필요해진 정렬 키 삭제
+        combined_df = combined_df.sort_values('_sort_key').drop(columns=['_sort_key'])
         return combined_df
     except:
         return pd.DataFrame()
@@ -231,9 +244,8 @@ with tab1:
                 }}
                 """
                 try:
-                    # AI 출력의 무작위성을 통제하기 위해 temperature를 0.0으로 설정
                     res = client.models.generate_content(
-                        model='gemini-3.5-flash', 
+                        model='gemini-2.5-flash', 
                         contents=prompt, 
                         config={
                             "response_mime_type": "application/json",
@@ -257,10 +269,10 @@ with tab1:
                         date_str = datetime.now().strftime("%y%m%d_%H%M%S")
                         new_file_name = f"{account_choice}_{date_str}.txt"
                         save_to_github(repo, new_file_name, "\n".join(updated_lines), f"Add {new_file_name}")
-                        st.success(f"✅ `{new_file_name}` 저장소 백업 완료. (시계열에 별도 데이터로 누적됩니다)")
+                        st.success(f"✅ `{new_file_name}` 저장소 백업 완료.")
 
                     append_rebalancing_history(repo, account_choice, deposit_amount, total_spent, rec_df, result.get("explanation", ""))
-                    st.success("✅ `Rebalancing_History.md` 파일에 실행 이력이 성공적으로 누적되었습니다.")
+                    st.success("✅ `Rebalancing_History.md` 파일에 실행 이력이 누적되었습니다.")
                 except Exception as e:
                     st.error(f"오류 발생: {e}")
         else:
@@ -283,8 +295,9 @@ with tab2:
         with col2:
             p_hist = get_all_historical_data(repo, "연금저축", target_df)
             if not p_hist.empty and len(p_hist['날짜'].unique()) > 0:
-                p_hist = p_hist.sort_values('날짜')
                 fig_pl = px.line(p_hist, x='날짜', y='목표대비편차(%p)', color='종목명', markers=True, title="목표 비중 편차 (0%p 일치)")
+                # X축을 카테고리형으로 강제 지정하여 밀리초 표시를 차단하고 라벨을 45도 회전
+                fig_pl.update_xaxes(type='category', title_text="", tickangle=45)
                 fig_pl.add_hline(y=0, line_dash="dash", line_color="gray")
                 st.plotly_chart(fig_pl, use_container_width=True)
             else: st.info("시계열 데이터 없음.")
@@ -304,8 +317,9 @@ with tab3:
         with col4:
             g_hist = get_all_historical_data(repo, "종합계좌", target_df)
             if not g_hist.empty and len(g_hist['날짜'].unique()) > 0:
-                g_hist = g_hist.sort_values('날짜')
                 fig_gl = px.line(g_hist, x='날짜', y='목표대비편차(%p)', color='종목명', markers=True, title="목표 비중 편차 (0%p 일치)")
+                # X축을 카테고리형으로 강제 지정하여 밀리초 표시를 차단하고 라벨을 45도 회전
+                fig_gl.update_xaxes(type='category', title_text="", tickangle=45)
                 fig_gl.add_hline(y=0, line_dash="dash", line_color="gray")
                 st.plotly_chart(fig_gl, use_container_width=True)
             else: st.info("시계열 데이터 없음.")
